@@ -4,7 +4,7 @@ import uuid
 import re
 import subprocess
 from datetime import datetime
-from flask import Flask, request, jsonify, send_file, abort
+from flask import Flask, request, jsonify, send_file, abort, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,7 +12,7 @@ from openai import OpenAI
 # Load environment variables
 load_dotenv(override=True)
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend', static_url_path='')
 CORS(app)  # Enable CORS for all routes
 
 # Configuration
@@ -204,7 +204,29 @@ def summarize_transcript_with_gemini(caption_content):
         print(f"Error summarizing transcript: {e}")
         return "Sorry, there was an error generating the summary."
 
+# Serve frontend
+@app.route('/')
+def serve_frontend():
+    return send_from_directory(app.static_folder, 'index.html')
+
 # API Routes
+@app.route('/api')
+def api_index():
+    """API root endpoint to check if server is running"""
+    return jsonify({
+        'message': 'Vidi-Q Backend Server is running',
+        'endpoints': {
+            'login': '/api/login (POST)',
+            'generate_video': '/api/videos/generate (POST)',
+            'user_videos': '/api/videos/user/<user_id> (GET)',
+            'search_videos': '/api/videos/search (GET)',
+            'video_details': '/api/videos/<video_id> (GET)',
+            'video_quiz': '/api/videos/<video_id>/quiz (GET)',
+            'video_summary': '/api/videos/<video_id>/summary (GET)',
+            'submit_quiz': '/api/quiz/<quiz_id>/submit (POST)'
+        }
+    })
+
 @app.route('/api/login', methods=['POST'])
 def login():
     """Handle user login"""
@@ -389,4 +411,4 @@ def serve_video(filename):
         abort(404)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, host='0.0.0.0')
