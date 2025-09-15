@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vidi-Q | AI Video & Quiz Platform</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React and Babel for JSX transpilation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, createContext, useContext, useMemo, useRef } = React;
+
+        // --- GEMINI API SERVICE ---
+        const geminiApiService = {
+            async generateQuizWithGemini(captionContent, videoId) {
+                const apiKey = ""; // Keep this empty
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                const systemPrompt = `You are an expert quiz creator for educational content. Based on the provided transcript, generate a JSON object representing a quiz. The quiz must have exactly 4 multiple-choice questions. Each question object inside the 'questions' array must have the following properties: 'id' (a unique number), 'text' (the question string), 'options' (an array of 4 unique strings: one correct answer and three plausible distractors), and 'answer' (the string of the correct answer, which must also be present in the 'options' array). Do not output any text, markdown, or code outside of the single JSON object.`;
+                
+                const userQuery = `Here is the transcript:\n\n---\n${captionContent}\n---`;
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: "OBJECT",
+                            properties: {
+                                "quiz_id": { "type": "STRING" },
+                                "video_id": { "type": "STRING" },
+                                "questions": {
+                                    "type": "ARRAY",
+                                    "items": {
+                                        "type": "OBJECT",
+                                        "properties": {
+                                            "id": { "type": "NUMBER" },
+                                            "text": { "type": "STRING" },
+                                            "options": { "type": "ARRAY", "items": { "type": "STRING" } },
+                                            "answer": { "type": "STRING" }
+                                        },
+                                        "required": ["id", "text", "options", "answer"]
+                                    }
+                                }
+                            },
+                           "required": ["quiz_id", "video_id", "questions"]
+                        }
+                    }
+                };
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`API call failed with status: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (jsonText) {
+                        const quizData = JSON.parse(jsonText);
+                        // Ensure videoId is correctly passed through
+                        quizData.video_id = videoId;
+                        return quizData;
+                    } else {
+                        throw new Error("Failed to parse quiz data from Gemini response.");
+                    }
+                } catch (error) {
+                    console.error("Error generating quiz with Gemini:", error);
+                    // Return a fallback quiz structure on error
+                    return { quiz_id: `err_quiz_${videoId}`, video_id: videoId, questions: [] };
+                }
+            },
+
+            async summarizeTranscriptWithGemini(captionContent) {
+                const apiKey = ""; // Keep this empty
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+                const systemPrompt = "You are an expert at summarizing educational content. Provide 3-4 key bullet points summarizing the most important information from the following transcript. Use a '-' for each bullet point.";
+                const userQuery = `Transcript:\n\n${captionContent}`;
+
+                const payload = {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
+                };
+                
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) throw new Error(`API call failed with status: ${response.status}`);
+                    
+                    const result = await response.json();
+                    return result.candidates?.[0]?.content?.parts?.[0]?.text || "Could not generate summary.";
+
+                } catch (error) {
+                    console.error("Error summarizing transcript:", error);
+                    return "Sorry, there was an error generating the summary.";
+                }
+            }
+        };
+
+        // --- MOCK API SERVICE ---
+        const mockApiService = {
+          login: () => new Promise(resolve => setTimeout(() => resolve({ user_id: 'user123', name: 'Alex Doe', email: 'alex.doe@example.com' }), 500)),
+          generateVideo: (prompt) => new Promise(resolve => setTimeout(() => {
+            const videoId = `vid_${Date.now()}`;
+            const newVideo = {
+              video_id: videoId, user_id: 'user123',
+              title: prompt.length > 30 ? prompt.substring(0, 30) + '...' : prompt,
+              thumbnail_url: `https://placehold.co/600x400/1a202c/ffffff?text=Video+for+${prompt.substring(0,10)}...`,
+              video_file_url: 'mock_video.mp4',
+              caption_content: `The primary topic of this discussion is the process of photosynthesis, a cornerstone of life on Earth. Photosynthesis is how plants, algae, and some bacteria convert light energy into chemical energy. The first key ingredient required is sunlight, which is absorbed by chlorophyll. The second element is water, absorbed through the roots. Finally, carbon dioxide is taken in from the atmosphere. The main output of this process is glucose, which serves as food for the plant. A critical byproduct is oxygen, which is released into the air and is essential for most living organisms. In conclusion, photosynthesis is a vital process that sustains the food chain and produces the oxygen we breathe.`,
+              topic_tags: prompt.toLowerCase().split(' ').filter(tag => tag.length > 3),
+              created_at: new Date().toISOString(),
+            };
+            resolve({ video: newVideo });
+          }, 2500)),
+          getUserVideos: (userId) => new Promise(resolve => setTimeout(() => resolve([
+            { video_id: 'vid001', user_id: 'user123', title: 'The History of Space Exploration', thumbnail_url: 'https://placehold.co/600x400/1a202c/ffffff?text=Space+History', created_at: new Date().toISOString() },
+            { video_id: 'vid002', user_id: 'user123', title: 'Deep Dive into Neural Networks', thumbnail_url: 'https://placehold.co/600x400/1a202c/ffffff?text=AI+Deep+Dive', created_at: new Date().toISOString() },
+          ]), 500)),
+          searchVideos: (query) => new Promise(resolve => setTimeout(() => resolve([
+            { video_id: 'vid003', user_id: 'user456', title: 'Beginners Guide to Quantum Physics', thumbnail_url: 'https://placehold.co/600x400/3d4451/ffffff?text=Quantum+Physics', created_at: new Date().toISOString() },
+            { video_id: 'vid004', user_id: 'user789', title: 'Understanding Photosynthesis', thumbnail_url: 'https://placehold.co/600x400/3d4451/ffffff?text=Photosynthesis', created_at: new Date().toISOString() },
+          ]), 500)),
+          getVideoAndQuizDetails: (videoId) => new Promise(resolve => setTimeout(() => resolve({
+            video: {
+              video_id: videoId, user_id: 'user123', title: 'Sample Video Title',
+              video_file_url: 'mock_video.mp4',
+              caption_content: "This is the full caption transcript for the video. The system reads this text to create a relevant and informative quiz. It contains all the key information that will be used to generate the quiz questions. One key detail is that the sky is blue. The final conclusion is always important.",
+              created_at: new Date().toISOString(),
+            }
+          }), 500)),
+        };
+
+        const AppContext = createContext();
+
+        function AppProvider({ children }) {
+          const [route, setRoute] = useState(window.location.hash || '#/login');
+          const [user, setUser] = useState(null);
+          const [userVideos, setUserVideos] = useState([]);
+          const [searchedVideos, setSearchedVideos] = useState([]);
+          const [currentQuiz, setCurrentQuiz] = useState(null);
+          const [isLoading, setIsLoading] = useState(false);
+          const [loadingText, setLoadingText] = useState("");
+          const [lastGeneratedVideo, setLastGeneratedVideo] = useState(null);
+
+          useEffect(() => {
+            const handleHashChange = () => setRoute(window.location.hash);
+            window.addEventListener('hashchange', handleHashChange);
+            return () => window.removeEventListener('hashchange', handleHashChange);
+          }, []);
+
+          const navigate = (path) => { window.location.hash = path; };
+          
+          const appContextValue = useMemo(() => ({
+            route, navigate, user, setUser, userVideos, setUserVideos, searchedVideos, setSearchedVideos, currentQuiz, setCurrentQuiz, isLoading, setIsLoading, lastGeneratedVideo, setLastGeneratedVideo, loadingText, setLoadingText
+          }), [route, user, userVideos, searchedVideos, currentQuiz, isLoading, lastGeneratedVideo, loadingText]);
+
+          return <AppContext.Provider value={appContextValue}>{children}</AppContext.Provider>;
+        }
+
+        function LoadingSpinner({ text }) {
+            return (
+                <div className="flex flex-col items-center justify-center space-y-4">
+                    <svg className="animate-spin h-10 w-10 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <p className="text-lg font-medium text-gray-300">{text}</p>
+                </div>
+            );
+        }
+
+        function VideoCard({ video, onClick }) { 
+            return (
+                <div onClick={onClick} className="bg-gray-800 rounded-lg overflow-hidden shadow-lg cursor-pointer transform hover:scale-105 transition-transform duration-300 w-64 flex-shrink-0">
+                    <img className="w-full h-36 object-cover" src={video.thumbnail_url} alt={video.title} />
+                    <div className="p-4">
+                        <h3 className="font-semibold text-md text-white truncate">{video.title}</h3>
+                        <p className="text-sm text-gray-400 mt-1">{new Date(video.created_at).toLocaleDateString()}</p>
+                    </div>
+                </div>
+            );
+        }
+        function Header() { 
+          const { user, navigate, setUser } = useContext(AppContext);
+          const handleLogout = () => { setUser(null); navigate('#/login'); };
+          return (
+            <header className="p-4 bg-gray-900/50 backdrop-blur-sm sticky top-0 z-10">
+                <div className="container mx-auto flex justify-between items-center">
+                    <h1 onClick={() => navigate(user ? '#/dashboard' : '#/login')} className="text-2xl font-bold text-white cursor-pointer">Vidi-Q</h1>
+                    {user && (
+                      <div className="flex items-center space-x-4">
+                          <button onClick={() => navigate('#/create')} className="text-gray-300 hover:text-white transition">Create Video</button>
+                          <button onClick={() => navigate('#/dashboard')} className="text-gray-300 hover:text-white transition">Dashboard</button>
+                          <button onClick={handleLogout} className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition">Logout</button>
+                      </div>
+                    )}
+                </div>
+            </header>
+          );
+        }
+
+        function LoginPage() {
+          const { navigate, setUser, setIsLoading, isLoading, loadingText, setLoadingText } = useContext(AppContext);
+          const handleLogin = async () => {
+            setLoadingText("Logging in...");
+            setIsLoading(true);
+            const loggedInUser = await mockApiService.login();
+            setUser(loggedInUser);
+            setIsLoading(false);
+            navigate('#/dashboard');
+          };
+          return (
+            <div className="flex flex-col items-center justify-center min-h-screen -mt-16">
+                <h1 className="text-5xl font-bold mb-4">Welcome to Vidi-Q</h1>
+                <p className="text-xl text-gray-400 mb-8">Create, Learn, and Test Your Knowledge.</p>
+                {isLoading ? <LoadingSpinner text={loadingText} /> : (
+                    <button onClick={handleLogin} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg text-lg transition-transform transform hover:scale-105">
+                        Login / Sign Up
+                    </button>
+                )}
+            </div>
+          );
+        }
+
+        function MainPage() {
+            const { navigate, setIsLoading, isLoading, setLastGeneratedVideo, setCurrentQuiz, loadingText, setLoadingText } = useContext(AppContext);
+            const [prompt, setPrompt] = useState('');
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!prompt.trim()) return;
+                
+                setLoadingText("Generating your video...");
+                setIsLoading(true);
+                const { video } = await mockApiService.generateVideo(prompt);
+                setLastGeneratedVideo(video);
+
+                setLoadingText("✨ Generating Quiz with Gemini...");
+                const quiz = await geminiApiService.generateQuizWithGemini(video.caption_content, video.video_id);
+                
+                setCurrentQuiz(quiz);
+                setIsLoading(false);
+                navigate(`#/quiz/${video.video_id}`);
+            };
+
+            return (
+                <div className="container mx-auto p-4 flex flex-col items-center justify-center" style={{height: '80vh'}}>
+                    {isLoading ? <LoadingSpinner text={loadingText} /> : (
+                        <div className="w-full max-w-2xl text-center">
+                            <h2 className="text-4xl font-bold mb-6">Create a new video</h2>
+                            <p className="text-gray-400 mb-8">Enter a topic or question, and our AI will generate a video, voiceover, and a quiz for you.</p>
+                            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+                                <textarea
+                                    value={prompt} onChange={(e) => setPrompt(e.target.value)}
+                                    className="w-full p-4 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    rows="4" placeholder="e.g., 'Explain the theory of relativity in simple terms'"
+                                ></textarea>
+                                <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg text-lg transition disabled:bg-gray-500" disabled={!prompt.trim()}>
+                                    Generate Video
+                                </button>
+                            </form>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function QuizPage() {
+            const { navigate, currentQuiz, isLoading } = useContext(AppContext);
+            const [answers, setAnswers] = useState({});
+            const [score, setScore] = useState(null);
+            const handleAnswerChange = (questionId, option) => {
+                setAnswers(prev => ({ ...prev, [questionId]: option }));
+            };
+            const handleSubmit = (e) => {
+                e.preventDefault(); let correctCount = 0;
+                if (!currentQuiz) return;
+                currentQuiz.questions.forEach(q => { if (answers[q.id] === q.answer) correctCount++; });
+                setScore({
+                    correct: correctCount, total: currentQuiz.questions.length,
+                    percentage: currentQuiz.questions.length > 0 ? Math.round((correctCount / currentQuiz.questions.length) * 100) : 0
+                });
+            };
+            if (isLoading) return <div className="flex justify-center items-center h-screen"><LoadingSpinner text="Loading Quiz..."/></div>;
+            if (!currentQuiz || currentQuiz.questions.length === 0) return <div className="text-center mt-20">Quiz not found or could not be generated. Please try creating another video. <button onClick={()=>navigate('#/create')} className="text-blue-400">Create Video</button></div>;
+            if (score !== null) {
+                return (
+                    <div className="container mx-auto p-4 text-center max-w-lg">
+                        <div className="bg-gray-800 p-8 rounded-lg shadow-lg">
+                            <h2 className="text-3xl font-bold mb-4">Quiz Result</h2>
+                            <p className="text-5xl font-bold mb-2">{score.percentage}%</p>
+                            <p className="text-xl text-gray-400 mb-6">You answered {score.correct} out of {score.total} questions correctly.</p>
+                            <p className={`text-2xl font-semibold ${score.percentage >= 70 ? 'text-green-400' : 'text-red-400'}`}>
+                                {score.percentage >= 70 ? 'You have passed!' : 'You can try again!'}
+                            </p>
+                            <button onClick={() => navigate('#/dashboard')} className="mt-8 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg text-lg transition">
+                                Go to Dashboard
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+            return (
+                <div className="container mx-auto p-4 max-w-2xl">
+                    <h2 className="text-3xl font-bold mb-6 text-center">Quiz Time!</h2>
+                    <form onSubmit={handleSubmit} className="bg-gray-800 p-8 rounded-lg space-y-8">
+                        {currentQuiz.questions.map((q, index) => (
+                            <div key={q.id}>
+                                <p className="font-semibold text-lg mb-4">{index + 1}. {q.text}</p>
+                                <div className="space-y-3">
+                                    {q.options.map(option => (
+                                        <label key={option} className="flex items-center p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-600 transition">
+                                            <input type="radio" name={`question_${q.id}`} value={option} onChange={() => handleAnswerChange(q.id, option)} className="form-radio h-5 w-5 text-blue-500 bg-gray-900 border-gray-600 focus:ring-blue-500"/>
+                                            <span className="ml-4 text-white">{option}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <button type="submit" className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg text-lg transition">
+                            Submit Quiz
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        function DashboardPage() { 
+            const { navigate, user, userVideos, setUserVideos, searchedVideos, setSearchedVideos, isLoading, setIsLoading, loadingText, setLoadingText } = useContext(AppContext);
+            const [searchQuery, setSearchQuery] = useState('');
+            useEffect(() => {
+                if (user) {
+                    setLoadingText("Fetching videos...");
+                    setIsLoading(true);
+                    Promise.all([
+                        mockApiService.getUserVideos(user.user_id),
+                        mockApiService.searchVideos('')
+                    ]).then(([userVids, popularVids]) => {
+                        setUserVideos(userVids);
+                        setSearchedVideos(popularVids);
+                    }).finally(() => setIsLoading(false));
+                }
+            }, [user, setUserVideos, setSearchedVideos, setIsLoading]);
+            const handleSearch = async (e) => {
+                e.preventDefault(); 
+                setLoadingText("Searching...");
+                setIsLoading(true);
+                const results = await mockApiService.searchVideos(searchQuery);
+                setSearchedVideos(results); setIsLoading(false);
+            };
+            return (
+                <div className="container mx-auto p-4 space-y-12">
+                    <div>
+                        <h2 className="text-3xl font-bold mb-4">Your Videos</h2>
+                        {isLoading && userVideos.length === 0 ? <LoadingSpinner text={loadingText} /> : 
+                         userVideos.length > 0 ? (
+                            <div className="flex space-x-4 overflow-x-auto pb-4">
+                                {userVideos.map(video => <VideoCard key={video.video_id} video={video} onClick={() => navigate(`#/watch/${video.video_id}`)} />)}
+                            </div>
+                        ) : <p className="text-gray-400">You haven't created any videos yet. <span onClick={()=>navigate('#/create')} className="text-blue-400 cursor-pointer">Create one!</span></p>
+                        }
+                    </div>
+                    <div>
+                        <h2 className="text-3xl font-bold mb-4">Discover Videos</h2>
+                        <form onSubmit={handleSearch} className="flex gap-2 mb-6">
+                            <input 
+                                type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search by topic, keywords..."
+                                className="w-full p-3 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition">Search</button>
+                        </form>
+                        {isLoading && searchedVideos.length === 0 ? <LoadingSpinner text={loadingText} /> :
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                                {searchedVideos.map(video => <VideoCard key={video.video_id} video={video} onClick={() => navigate(`#/watch/${video.video_id}`)} />)}
+                            </div>
+                        }
+                    </div>
+                </div>
+            );
+        }
+
+        function VideoPlayerPage() {
+            const { navigate, route, setCurrentQuiz, isLoading, setIsLoading, loadingText, setLoadingText } = useContext(AppContext);
+            const [videoDetails, setVideoDetails] = useState(null);
+            const [summary, setSummary] = useState(null);
+            const [isSummarizing, setIsSummarizing] = useState(false);
+            const videoId = route.split('/')[2];
+            
+            useEffect(() => {
+                setLoadingText("Loading video details...");
+                setIsLoading(true);
+                setSummary(null); // Reset summary on new video load
+                mockApiService.getVideoAndQuizDetails(videoId)
+                    .then(({ video }) => setVideoDetails({ video }))
+                    .finally(() => setIsLoading(false));
+            }, [videoId, setIsLoading]);
+            
+            const handleTakeQuiz = async () => {
+                setLoadingText("✨ Generating Quiz with Gemini...");
+                setIsLoading(true);
+                const quiz = await geminiApiService.generateQuizWithGemini(videoDetails.video.caption_content, videoId);
+                setCurrentQuiz(quiz);
+                setIsLoading(false);
+                navigate(`#/quiz/${videoId}`);
+            };
+
+            const handleGetSummary = async () => {
+                setIsSummarizing(true);
+                const result = await geminiApiService.summarizeTranscriptWithGemini(videoDetails.video.caption_content);
+                setSummary(result);
+                setIsSummarizing(false);
+            };
+
+            if (isLoading || !videoDetails) return <div className="flex justify-center items-center h-screen"><LoadingSpinner text={loadingText} /></div>;
+            
+            return (
+                <div className="container mx-auto p-4 max-w-4xl">
+                    <div className="bg-black aspect-video rounded-lg mb-4 flex items-center justify-center">
+                        <p className="text-gray-400">Video player for: {videoDetails.video.title}</p>
+                    </div>
+                    <div className="bg-gray-800 p-6 rounded-lg">
+                         <h2 className="text-3xl font-bold">{videoDetails.video.title}</h2>
+                         <p className="text-sm text-gray-400 mb-6">Created on {new Date(videoDetails.video.created_at).toLocaleDateString()}</p>
+                         
+                         <div className="mb-6">
+                             <div className="flex justify-between items-center mb-2">
+                                <h3 className="font-semibold text-xl">Transcript</h3>
+                                <button onClick={handleGetSummary} disabled={isSummarizing} className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition text-sm disabled:bg-gray-500">
+                                    {isSummarizing ? 'Summarizing...' : '✨ Get Key Takeaways'}
+                                </button>
+                             </div>
+                             {summary && (
+                                <div className="bg-gray-900/50 p-4 rounded-lg mb-4 whitespace-pre-wrap">
+                                    <h4 className="font-bold mb-2">Summary:</h4>
+                                    <p className="text-gray-300">{summary}</p>
+                                </div>
+                             )}
+                            <p className="text-gray-300 whitespace-pre-wrap">{videoDetails.video.caption_content}</p>
+                         </div>
+
+                         <button onClick={handleTakeQuiz} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg text-lg transition">
+                             Take the Quiz
+                         </button>
+                    </div>
+                </div>
+            );
+        }
+
+        function App() { 
+            const { route, user } = useContext(AppContext);
+            const renderPage = () => {
+              const isProtectedRoute = !['#/login', ''].includes(route.split('?')[0]);
+              if (isProtectedRoute && !user) {
+                window.location.hash = '#/login';
+                return <LoginPage />;
+              }
+              if (route.startsWith('#/watch/')) return <VideoPlayerPage />;
+              if (route.startsWith('#/quiz/')) return <QuizPage />;
+              switch (route) {
+                case '#/create': return <MainPage />;
+                case '#/dashboard': return <DashboardPage />;
+                case '#/login':
+                default:
+                  return <LoginPage />;
+              }
+            };
+            return (
+                <div className="min-h-screen bg-gray-900 text-white">
+                    <Header />
+                    <main>{renderPage()}</main>
+                </div>
+            );
+        }
+
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(
+          <AppProvider>
+            <App />
+          </AppProvider>
+        );
+    </script>
+</body>
+</html>
+
